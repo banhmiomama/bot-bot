@@ -2,10 +2,7 @@ require("dotenv").config();
 const express = require("express");
 const crypto = require("crypto");
 const TelegramBot = require("node-telegram-bot-api");
-const puppeteer = require("puppeteer");
 const path = require("path");
-const fs = require("fs");
-
 const { processMessage, setWebhook, deleteWebhook } = require("./comon/comon");
 
 const port = process.env.PORT || 3000;
@@ -21,16 +18,11 @@ const validPasswordHash = crypto
 
 app.use(express.json());
 
-let browserInstance = null;
-let awaitAuth = false;
-let pageAuth = null;
 let dataDistrist = {};
-const tokenFilePath = "./access_token.txt";
-let ACCESS_TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJvcmdDb2RlIjoiZ2huZXhwcmVzcyIsInBhcnRuZXJDb2RlIjoiIiwic2VlZCI6MTc1NzQxMDI2Mzc3NjM5Mzg2LCJzc29JZCI6IjMwMzQ2NTAiLCJ1c2VySWQiOiI2MmViNWNhMzc4Mzc4NDIzZDk0MDk3OTEifQ.lUKfGxUAo8APd_7OLeVYppVDhLGpV0NP_TvSpAk2K1g";
-let INFO_TOKEN = "92f2362e-c2d0-11ef-8cf1-3218e4e684df";
-// //if (fs.existsSync(tokenFilePath)) {
-//   ACCESS_TOKEN = fs.readFileSync(tokenFilePath, 'utf-8');
-// }
+let ACCESS_TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJvcmdDb2RlIjoiZ2huZXhwcmVzcyIsInBhcnRuZXJDb2RlIjoiIiwic2VlZCI6NTUzODE2NzYwNDYzNjE3MDY0Nywic3NvSWQiOiIzMDM0NjUwIiwidXNlcklkIjoiNjJlYjVjYTM3ODM3ODQyM2Q5NDA5NzkxIn0.XTdsEa6_fId7wP-oGqWWdgDSlezPigOLpdcneKsELNE";
+let INFO_TOKEN = "e7a2b20a-c46c-11ef-8aa3-5afc7ca5b5c0";
+
+let USER_AGENT = process.env.USER_AGENT || 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36';
 
 let TYPE_IN = "in";
 let TYPE_OTP = "otp";
@@ -39,8 +31,9 @@ let TYPE_AUTH = "auth";
 let TYPE_AUTHINFO = "auth_info";
 let TYPE_INFO = "info";
 let TYPE_RUN = 'run';
+let TYPE_ADD = 'add'; 
 
-const TYPE = [TYPE_IN, TYPE_OTP, TYPE_PIN, TYPE_AUTH,TYPE_AUTHINFO, TYPE_INFO, TYPE_RUN];
+const TYPE = [TYPE_IN, TYPE_OTP, TYPE_PIN, TYPE_AUTH,TYPE_AUTHINFO, TYPE_INFO, TYPE_RUN, TYPE_ADD];
  
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "index.html"));
@@ -51,20 +44,17 @@ app.post(`/bot${botToken}`, async (req, res) => {
   const message = req?.body?.message ?? {};
   console.log(JSON.stringify(message));
   //if (message != undefined && message?.text != undefined && message?.chat?.id == -1002399045881) {
-
+  //-1002254854101 // chỉ in
+  //-1002498534400
   if (message != undefined && message?.text != undefined) {
     try {
       const chatId = message?.chat?.id;
       const messageId = message.message_id;
       const { type, content } = processMessage(message, TYPE);
-      console.log("chatId", chatId);
-      console.log("type", type);
-      console.log("content", content);
-      if (!TYPE.includes(type)) {
+      if (!TYPE.includes(type) || (!TYPE_IN.includes(type) && [-1002254854101].includes(chatId))) {
         res.status(200).send("NEXT");
         return;
       }
-
       switch (type) {
         case TYPE_IN:
           let result = await getPrintA5(content);
@@ -114,11 +104,15 @@ app.post(`/bot${botToken}`, async (req, res) => {
             }
           }
           break;
+        case TYPE_ADD:
+          if (content && content.length > 0) {
+            handleOrderAdd(chatId, messageId, content);
+          }
+          break;
       }
       res.status(200).send("Message replied");
     } catch (error) {
-      console.error("Error in webhook handler:", error);
-      res.status(500).send("Failed to reply to message");
+      res.status(200).send("Failed to reply to message");
     }
   } else {
     res.status(200).send("No message data");
@@ -236,8 +230,7 @@ const getPrintA5 = async (order_codes) => {
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${ACCESS_TOKEN}`,
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "User-Agent": USER_AGENT,
         "X-Warehouseid": Warehouseid,
         Referer: "https://nhanh.ghn.vn/",
         "Accept-Encoding": "gzip, deflate, br, zstd",
@@ -262,12 +255,15 @@ const getPrintA5 = async (order_codes) => {
       });
   });
 };
+//#endregion
 
-const getTripCode = async (driverId) => {
+//#region // TRIP
+
+const getTripCode = async (driverId, status = "NEW") => {
   return new Promise((resolve) => {
       const bodyData = {
         "hub_id": Warehouseid,
-        "status": "NEW",
+        "status": status,
         "is_ready": 0,
         "offset": 0,
         "limit": 100,
@@ -280,8 +276,7 @@ const getTripCode = async (driverId) => {
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${ACCESS_TOKEN}`,
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "User-Agent":USER_AGENT,
         "X-Warehouseid": Warehouseid,
         "Content-Length": JSON.stringify(bodyData).length,
         Referer: "https://nhanh.ghn.vn/",
@@ -297,11 +292,11 @@ const getTripCode = async (driverId) => {
         return response.json();
       })
       .then((data) => {
-        const dataTrips = data?.data?.find((item) => {return item.driverId == driverId});
-        resolve(dataTrips?.tripCode ?? "");
+        const dataTrips = data?.data?.find((item) => { return item.driverId == driverId });
+        resolve(dataTrips ?? {});
       })
       .catch((error) => {
-        resolve("");
+        resolve({});
       });
   });
 };
@@ -317,8 +312,7 @@ const setTripReady = async (trip_code) => {
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${ACCESS_TOKEN}`,
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "User-Agent":USER_AGENT,
         "X-Warehouseid": Warehouseid,
         "Content-Length": JSON.stringify(bodyData).length,
         Referer: "https://nhanh.ghn.vn/",
@@ -349,8 +343,7 @@ const setTripStart = async (trip_code) => {
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${ACCESS_TOKEN}`,
-        "User-Agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "User-Agent": USER_AGENT,
         "X-Warehouseid": Warehouseid,
         "Content-Length": JSON.stringify(bodyData).length,
         Referer: "https://nhanh.ghn.vn/",
@@ -371,23 +364,142 @@ const setTripStart = async (trip_code) => {
   });
 };
 
-const handleRunTrip = async ( chatId, messageId, driverId) => {
+const handleRunTrip = async (chatId, messageId, driverId) => {
   return new Promise(async (resolve) => {
-      let tripcode = await getTripCode(driverId.split("\n")[0]);
-      if(tripcode == ""){
+      let { tripCode }= await getTripCode(driverId.split("\n")[0]);
+      if(tripCode== undefined || tripCode == ""){
         sendMessageReply(chatId, messageId, `<b>${driverId}</b>: Không có trong DS chuyến đi`)
         return;
       }
-      //sendMessageReply(chatId, messageId, `Mã chuyến đi: ${tripcode}`);
-      let isReady = await setTripReady(tripcode);
+      let isReady = await setTripReady(tripCode);
       sendMessageReply(chatId, messageId, `<b>${driverId}</b>: ${isReady ? `Chuyến đi sẵn sàng`: `Chuyến đi chưa sẵn sàng`}`);
       if(!isReady) return;
-      let isStart = await setTripStart(tripcode);
+      let isStart = await setTripStart(tripCode);
       sendMessageReply(chatId, messageId, `<b>${driverId}</b>: ${isStart ? `Bắt đầu`: `Bắt đầu thất bại`}`);
   });
 };
 
+//#region // Handle Add
 
+const handleOrderAdd = async (chatId, messageId, content) => {
+  return new Promise(async (resolve) => {
+    let [ orderCode, empCode ] = content.split("\n");
+    if(orderCode == undefined || orderCode == "") return;
+    let { deliver_warehouse_id, status_ops_name } = await getOrderInfo(orderCode);
+    if (deliver_warehouse_id == Warehouseid) {
+      if (status_ops_name == "Lưu kho giao") {
+        let { tripCode  } = {
+            ...(await getTripCode(empCode)),
+            ...(await getTripCode(empCode, "ON_TRIP")),
+        };
+        if (tripCode == undefined || tripCode == "") {
+          sendMessageReply(chatId ,messageId ,`<b>${empCode}</b>: Không có trong DS chuyến đi hoặc đã chạy`);
+          return;
+        }
+        await setUnPack(orderCode)
+        sendMessageReply(chatId,messageId,`<b>${orderCode}</b>: Rã hàng`);
+        let result = await addOrderItem({
+          tripCode: tripCode,
+          orderCodes: orderCode,
+        });
+        if(result == false){
+          sendMessageReply(chatId,messageId,`<b>${orderCode}</b>: Chuyển thất bại`);
+          return;
+        }
+        if(result?.status == "OK"){
+          sendMessageReply(chatId,messageId,`<b>${orderCode}</b>: Thêm đơn hàng thành công cho ${empCode}`);
+          return;
+        }
+        sendMessageReply(chatId,messageId,`<b>${result?.message?.split(",")[0] ?? "Thất bại"}, nhắn lên nhóm giao hàng</b>`);
+        return;
+      } else if (status_ops_name == "Đang giao hàng") {
+        sendMessageReply(chatId, messageId, `<b>${orderCode}</b>: ${status_ops_name}`)
+      } else {
+        sendMessageReply(chatId, messageId, `<b>${orderCode}</b>: ${status_ops_name}`)
+      }
+    }
+    else if(deliver_warehouse_id != undefined){
+      sendMessageReply(chatId,messageId,`<b>Nhắn lên nhóm giao hàng</b>`);
+    }
+  });
+};
+
+const addOrderItem = async ({ tripCode,orderCodes }) => {
+  return new Promise((resolve) => {
+      const bodyData = {
+        "tripCode": tripCode,
+        "type": "DELIVER",
+        "orderCodes": orderCodes.split("\n"),
+        "confirmWarning": false
+    }
+    fetch("https://fe-nhanh-api.ghn.vn/api/lastmile/v2/trip/add-item-v1", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${ACCESS_TOKEN}`,
+        "User-Agent":USER_AGENT,
+        "X-Warehouseid": Warehouseid,
+        "Content-Length": JSON.stringify(bodyData).length,
+        Referer: "https://nhanh.ghn.vn/",
+        "Accept-Encoding": "gzip, deflate, br, zstd",
+        "Accept-Language": "en-US,en;q=0.9",
+      },
+      body: JSON.stringify(bodyData),
+    })
+      .then((response) => {
+        if (!response.ok) {
+          throw new Error(`HTTP error! Status: ${response.status}`);
+        }
+        return response.json();
+      })
+      .then((data) => {
+        resolve(data);
+      })
+      .catch((error) => {
+        resolve(false);
+      });
+  });
+};
+
+const setUnPack = async (orderCode) => {
+  return new Promise((resolve) => {
+    const bodyData = {
+      orderCode: orderCode,
+      locationId: Warehouseid,
+      locationType: "GHN_HUB",
+      source: "INSIDE_WEB_APP/ktc-van-tai/unpack/quick",
+    };
+    fetch("https://inside-prd-api.ghn.vn/pms/v1/package/unpack-quick", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${ACCESS_TOKEN}`,
+        "User-Agent":USER_AGENT,
+        "X-Warehouseid": Warehouseid,
+        "Content-Length": JSON.stringify(bodyData).length,
+        Referer: "https://nhanh.ghn.vn/",
+        "Accept-Encoding": "gzip, deflate, br, zstd",
+        "Accept-Language": "en-US,en;q=0.9",
+      },
+      body: JSON.stringify(bodyData),
+    })
+      .then((response) => {
+        if (!response.ok) {
+          throw new Error(`HTTP error! Status: ${response.status}`);
+        }
+        return response.json();
+      })
+      .then((data) => {
+        resolve(true);
+      })
+      .catch((error) => {
+        resolve(false);
+      });
+  });
+};
+
+
+//#endregion
 
 const getOrderInfo = async (order_codes) => {
   return new Promise((resolve) => {
@@ -404,8 +516,7 @@ const getOrderInfo = async (order_codes) => {
       "Content-Length": JSON.stringify(bodyData).length,
       Token: `${INFO_TOKEN}`,
       origin: "https://tracuunoibo.ghn.vn",
-      "User-Agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+      "User-Agent":USER_AGENT,
       Referer: "https://tracuunoibo.ghn.vn/",
       "Sec-Ch-Ua": `"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"`,
       "Sec-Ch-Ua-Mobile": "?0",
@@ -434,7 +545,7 @@ const getOrderInfo = async (order_codes) => {
         resolve(data?.data?.order_info ?? {});
       })
       .catch((error) => {
-        sendOwner({ content: `data errr: ${error.toString()} ` });
+        sendOwner({ content: `data error: ${error.toString()} ` });
         resolve({});
       });
   });
@@ -454,8 +565,7 @@ const getWareDetail = async (code) => {
           "Content-Type": "application/json",
           Token: `${INFO_TOKEN}`,
           origin: "https://tracuunoibo.ghn.vn",
-          "User-Agent":
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+          "User-Agent":USER_AGENT,
           Referer: "https://tracuunoibo.ghn.vn/",
         }
       }
@@ -475,7 +585,6 @@ const getWareDetail = async (code) => {
   });
 };
 
-
 const getDistricts = async () => {
   return new Promise((resolve) => {
     fetch(
@@ -489,8 +598,7 @@ const getDistricts = async () => {
             "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7,fr-FR;q=0.6,fr;q=0.5",
           "Content-Type": "application/json",
           origin: "https://tracuunoibo.ghn.vn",
-          "User-Agent":
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+          "User-Agent": USER_AGENT,
           Referer: "https://tracuunoibo.ghn.vn/",
         }
       }
@@ -512,9 +620,6 @@ const getDistricts = async () => {
 
 //#endregion
 
-// const setAccessToken = (token) =>{
-//   fs.writeFileSync(tokenFilePath, token, 'utf-8');
-// }
 
 app.listen(port, async () => {
   console.log(`Server đang chạy trên cổng ${port}`);
@@ -529,7 +634,6 @@ app.listen(port, async () => {
       return pre;
     }, {})
   }
-
   await deleteWebhook();
   await setWebhook();
 });

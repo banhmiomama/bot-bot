@@ -5,7 +5,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Trigger openWebView</title>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.2.0/crypto-js.min.js" integrity="sha512-a+SUDuwNzXDvz4XrIcXHuCf089/iJAoN4lmrXJg18XnduKK6YlDHNRalv4yd1N40OKI80tFidF+rqTFKGPoWFQ==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -52,54 +51,6 @@
 
 <body>
     <h1>Trigger openWebView</h1>
-    <form id="triggerForm">
-        <label>
-            Text:
-            <input type="text" name="text" placeholder="Enter text for openWebView" required />
-        </label>
-        <label>
-            Password:
-            <input type="password" name="password" placeholder="Enter password" required />
-        </label>
-        <button type="submit">Trigger</button>
-    </form>
-    <div id="result"></div>
-
-    <script>
-        const form = document.getElementById("triggerForm");
-        const resultDiv = document.getElementById("result");
-
-        form.addEventListener("submit", async (e) => {
-            e.preventDefault();
-
-            const formData = new FormData(form);
-            const password = formData.get("password");
-
-            // Mã hóa mật khẩu với MD5
-            const hashedPassword = CryptoJS.MD5(password).toString(CryptoJS.enc.Hex);
-
-            const payload = {
-                text: formData.get("text"),
-                password: hashedPassword,
-            };
-
-            try {
-                const response = await fetch("/sendAccess", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify(payload),
-                });
-                const result = await response.json();
-                if (result.success) {
-                    resultDiv.innerHTML = `<div class="result">Success! Token: ${result.token}</div>`;
-                } else {
-                    resultDiv.innerHTML = `<div class="error">Error: ${result.message}</div>`;
-                }
-            } catch (error) {
-                resultDiv.innerHTML = `<div class="error">Failed to connect to server.</div>`;
-            }
-        });
-    </script>
 </body>
 
 </html>
