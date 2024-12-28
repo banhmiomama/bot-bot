@@ -430,8 +430,8 @@ const handleOrderAdd = async (chatId, messageId, content) => {
         let exectorCode =  itemStatus?.executor?.employee_id ?? ""
         sendMessageReply(chatId, messageId, `
           <b>${orderCode}</b>: ${status_ops_name} 
-          ${exectorCode != "" ? ` <b>${exectorCode}</b>: Đang giao `: ""}
-          `)
+          ${exectorCode != "" ? `<b>Trong app ${exectorCode}</b>`: ""}
+        `)
       } else {
         sendMessageReply(chatId, messageId, `<b>${orderCode}</b>: ${status_ops_name}`)
       }
