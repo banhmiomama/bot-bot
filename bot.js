@@ -93,12 +93,12 @@ app.post(`/bot${botToken}`, async (req, res) => {
           break;
         case TYPE_INFO:
           if (content && content.length > 0) {
-            let result = await getOrderInfo(content);
+            let { order_info } = await getOrderInfo(content);
             if (
-              typeof result == "object" &&
-              Object.entries(result).length > 0
+              typeof order_info == "object" &&
+              Object.entries(order_info).length > 0
             ) {
-              sendMessageInfo(chatId, messageId, result);
+              sendMessageInfo(chatId, messageId, order_info);
             } else {
               sendOwner({ content: "Chưa xác thực INFO TOKEN" });
             }
@@ -394,13 +394,14 @@ const handleOrderAdd = async (chatId, messageId, content) => {
   return new Promise(async (resolve) => {
     let [ orderCode, empCode ] = content.split("\n");
     if(orderCode == undefined || orderCode == "") return;
-    let { deliver_warehouse_id, status_ops_name } = await getOrderInfo(orderCode);
+    let { order_info, tracking_logs} = await getOrderInfo(orderCode);
+    let { deliver_warehouse_id, status_ops_name,  } = order_info ?? {};
     if (deliver_warehouse_id == Warehouseid) {
-      if (status_ops_name == "Lưu kho giao") {
+      if (status_ops_name == "Lưu kho giao" || status_ops_name == "Đang luân chuyển giao") {
         let tripCodeDefault = await getTripCode(empCode);
         await sleep(1000);
         let tripCodeOnTrip = await getTripCode(empCode, "ON_TRIP");
-        let tripCode = {
+        let {tripCode } = {
             ...tripCodeDefault,
             ...tripCodeOnTrip,
         };
@@ -425,7 +426,12 @@ const handleOrderAdd = async (chatId, messageId, content) => {
         sendMessageReply(chatId,messageId,`<b>${result?.message?.split(",")[0] ?? "Thất bại"}, nhắn lên nhóm giao hàng</b>`);
         return;
       } else if (status_ops_name == "Đang giao hàng") {
-        sendMessageReply(chatId, messageId, `<b>${orderCode}</b>: ${status_ops_name}`)
+        let itemStatus = tracking_logs?.find((item) => { return item.action_code == "START_DELIVERY_TRIP" });
+        let exectorCode =  itemStatus?.executor?.employee_id ?? ""
+        sendMessageReply(chatId, messageId, `
+          <b>${orderCode}</b>: ${status_ops_name} 
+          ${exectorCode != "" ? ` <b>${exectorCode}</b>: Đang giao `: ""}
+          `)
       } else {
         sendMessageReply(chatId, messageId, `<b>${orderCode}</b>: ${status_ops_name}`)
       }
@@ -554,7 +560,7 @@ const getOrderInfo = async (order_codes) => {
       })
       .then((data) => {
         //sendOwner({content: `data RES: ${JSON.stringify(data)} `});
-        resolve(data?.data?.order_info ?? {});
+        resolve(data?.data ?? {});
       })
       .catch((error) => {
         sendOwner({ content: `data error: ${error.toString()} ` });
