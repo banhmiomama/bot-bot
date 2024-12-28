@@ -261,43 +261,50 @@ const getPrintA5 = async (order_codes) => {
 
 const getTripCode = async (driverId, status = "NEW") => {
   return new Promise((resolve) => {
+    setTimeout(() => {
       const bodyData = {
-        "hub_id": Warehouseid,
-        "status": status,
-        "is_ready": 0,
-        "offset": 0,
-        "limit": 100,
-        "reverse": 1,
-        "page": 1,
-        "size": 100
-    }
-    fetch("https://fe-nhanh-api.ghn.vn/api/lastmile/trip/get-trip-list-by-hub", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${ACCESS_TOKEN}`,
-        "User-Agent":USER_AGENT,
-        "X-Warehouseid": Warehouseid,
-        "Content-Length": JSON.stringify(bodyData).length,
-        Referer: "https://nhanh.ghn.vn/",
-        "Accept-Encoding": "gzip, deflate, br, zstd",
-        "Accept-Language": "en-US,en;q=0.9",
-      },
-      body: JSON.stringify(bodyData),
-    })
-      .then((response) => {
-        if (!response.ok) {
-          throw new Error(`HTTP error! Status: ${response.status}`);
+        hub_id: Warehouseid,
+        status: status,
+        is_ready: 0,
+        offset: 0,
+        limit: 100,
+        reverse: 1,
+        page: 1,
+        size: 100,
+      };
+      fetch(
+        "https://fe-nhanh-api.ghn.vn/api/lastmile/trip/get-trip-list-by-hub",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${ACCESS_TOKEN}`,
+            "User-Agent": USER_AGENT,
+            "X-Warehouseid": Warehouseid,
+            "Content-Length": JSON.stringify(bodyData).length,
+            Referer: "https://nhanh.ghn.vn/",
+            "Accept-Encoding": "gzip, deflate, br, zstd",
+            "Accept-Language": "en-US,en;q=0.9",
+          },
+          body: JSON.stringify(bodyData),
         }
-        return response.json();
-      })
-      .then((data) => {
-        const dataTrips = data?.data?.find((item) => { return item.driverId == driverId });
-        resolve(dataTrips ?? {});
-      })
-      .catch((error) => {
-        resolve({});
-      });
+      )
+        .then((response) => {
+          if (!response.ok) {
+            throw new Error(`HTTP error! Status: ${response.status}`);
+          }
+          return response.json();
+        })
+        .then((data) => {
+          const dataTrips = data?.data?.find((item) => {
+            return item.driverId == driverId;
+          });
+          resolve(dataTrips ?? {});
+        })
+        .catch((error) => {
+          resolve({});
+        });
+    }, 300);
   });
 };
 
@@ -380,7 +387,9 @@ const handleRunTrip = async (chatId, messageId, driverId) => {
 };
 
 //#region // Handle Add
-
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 const handleOrderAdd = async (chatId, messageId, content) => {
   return new Promise(async (resolve) => {
     let [ orderCode, empCode ] = content.split("\n");
@@ -388,9 +397,12 @@ const handleOrderAdd = async (chatId, messageId, content) => {
     let { deliver_warehouse_id, status_ops_name } = await getOrderInfo(orderCode);
     if (deliver_warehouse_id == Warehouseid) {
       if (status_ops_name == "Lưu kho giao") {
-        let { tripCode  } = {
-            ...(await getTripCode(empCode)),
-            ...(await getTripCode(empCode, "ON_TRIP")),
+        let tripCodeDefault = await getTripCode(empCode);
+        await sleep(1000);
+        let tripCodeOnTrip = await getTripCode(empCode, "ON_TRIP");
+        let tripCode = {
+            ...tripCodeDefault,
+            ...tripCodeOnTrip,
         };
         if (tripCode == undefined || tripCode == "") {
           sendMessageReply(chatId ,messageId ,`<b>${empCode}</b>: Không có trong DS chuyến đi hoặc đã chạy`);
