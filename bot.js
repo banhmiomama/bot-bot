@@ -1,9 +1,10 @@
 require("dotenv").config();
 const express = require("express");
-const crypto = require("crypto");
 const TelegramBot = require("node-telegram-bot-api");
 const path = require("path");
 const { processMessage, setWebhook, deleteWebhook } = require("./comon/comon");
+const axios = require('axios');
+const { chromium } = require('playwright');
 
 const port = process.env.PORT || 3000;
 const botToken = process.env.TELEGRAM_BOT_TOKEN;
@@ -11,14 +12,11 @@ const IDOWNER = process.env.TELEGRAM_IDOWNER;
 const Warehouseid = "21122000";
 const bot = new TelegramBot(botToken, { polling: false });
 const app = express();
-const validPasswordHash = crypto
-  .createHash("md5")
-  .update("hoikythuat")
-  .digest("hex"); // Mã hóa mật khẩu hợp lệ
 
 app.use(express.json());
-
-let dataDistrist = {};
+let browser; // Giữ trình duyệt Chromium
+let page; // Trang hiện tại
+let dataDistrist = {}, dataSchedule = {};
 let ACCESS_TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJvcmdDb2RlIjoiZ2huZXhwcmVzcyIsInBhcnRuZXJDb2RlIjoiIiwic2VlZCI6NTUzODE2NzYwNDYzNjE3MDY0Nywic3NvSWQiOiIzMDM0NjUwIiwidXNlcklkIjoiNjJlYjVjYTM3ODM3ODQyM2Q5NDA5NzkxIn0.XTdsEa6_fId7wP-oGqWWdgDSlezPigOLpdcneKsELNE";
 let INFO_TOKEN = "e7a2b20a-c46c-11ef-8aa3-5afc7ca5b5c0";
 
@@ -35,10 +33,9 @@ let TYPE_ADD = 'add';
 
 const TYPE = [TYPE_IN, TYPE_OTP, TYPE_PIN, TYPE_AUTH,TYPE_AUTHINFO, TYPE_INFO, TYPE_RUN, TYPE_ADD];
  
-app.get("/", (req, res) => {
-  res.sendFile(path.join(__dirname, "index.html"));
-});
-
+const chatAllow = [
+  -1002254854101, -1002399045881, 6140961420, -1002498534400
+]
 // Endpoint xử lý webhook
 app.post(`/bot${botToken}`, async (req, res) => {
   const message = req?.body?.message ?? {};
@@ -51,7 +48,7 @@ app.post(`/bot${botToken}`, async (req, res) => {
       const chatId = message?.chat?.id;
       const messageId = message.message_id;
       const { type, content } = processMessage(message, TYPE);
-      if (!TYPE.includes(type) || (!TYPE_IN.includes(type) && [-1002254854101].includes(chatId))) {
+      if (!chatAllow.includes(chatId) || !TYPE.includes(type) || (!TYPE_IN.includes(type) && [-1002254854101].includes(chatId))) {
         res.status(200).send("NEXT");
         return;
       }
@@ -67,22 +64,25 @@ app.post(`/bot${botToken}`, async (req, res) => {
           }
           break;
         case TYPE_PIN:
+          runLoginPage_Pin(content);
           break;
         case TYPE_OTP:
+          runLoginPage_OTP(content)
           break;
         case TYPE_AUTH:
           if (content && content.length > 100) {
             ACCESS_TOKEN = content;
             sendOwner({ content: "Nhập xác thực thành công" });
+            handleGetDataUser();
             res.status(200).send("Message replied");
             return;
           }
           break;
-          case TYPE_RUN:
-            if (content && content.length > 6) {
-              handleRunTrip(chatId, messageId, content);
-            }
-            break;
+        case TYPE_RUN:
+          if (content && content.length > 6) {
+            handleRunTrip(chatId, messageId, content);
+          }
+          break;
         case TYPE_AUTHINFO:
           if (content && content.length > 20) {
             INFO_TOKEN = content;
@@ -116,30 +116,6 @@ app.post(`/bot${botToken}`, async (req, res) => {
     }
   } else {
     res.status(200).send("No message data");
-  }
-});
-
-app.post("/sendAccess", async (req, res) => {
-  try {
-    const { text, password } = req?.body;
-    if (password != validPasswordHash || text == "" || text.length < 100) {
-      res.status(500).json({
-        success: false,
-        message: `Failed to trigger openWebView. ${password} ${validPasswordHash}`,
-      });
-      return;
-    }
-    ACCESS_TOKEN = text;
-    res.status(200).json({
-      success: true,
-      message: "openWebView triggered successfully.",
-      token: "",
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: "Failed to trigger openWebView.",
-    });
   }
 });
 
@@ -411,6 +387,7 @@ const handleOrderAdd = async (chatId, messageId, content) => {
         }
         await setUnPack(orderCode)
         sendMessageReply(chatId,messageId,`<b>${orderCode}</b>: Rã hàng`);
+        await sleep(4000);
         let result = await addOrderItem({
           tripCode: tripCode,
           orderCodes: orderCode,
@@ -429,8 +406,7 @@ const handleOrderAdd = async (chatId, messageId, content) => {
         let itemStatus = tracking_logs?.find((item) => { return item.action_code == "START_DELIVERY_TRIP" });
         let exectorCode =  itemStatus?.executor?.employee_id ?? ""
         sendMessageReply(chatId, messageId, `
-          <b>${orderCode}</b>: ${status_ops_name} 
-          ${exectorCode != "" ? `<b>Trong app ${exectorCode}</b>`: ""}
+          <b>${orderCode}</b>: ${status_ops_name}\n${exectorCode != "" ? `<b>Trong App: ${exectorCode} - ${dataSchedule[exectorCode]?.user_name ?? ""}</b>`: ""}
         `)
       } else {
         sendMessageReply(chatId, messageId, `<b>${orderCode}</b>: ${status_ops_name}`)
@@ -519,128 +495,315 @@ const setUnPack = async (orderCode) => {
 
 //#endregion
 
+
 const getOrderInfo = async (order_codes) => {
-  return new Promise((resolve) => {
-    const bodyData = {
-      order_code: order_codes.split("\n")[0],
-      source: "inside_system",
-    };
-    const headerData = {
-      Accept: "application/json",
-      "Accept-Encoding": "gzip, deflate, br, zstd",
-      "Accept-Language":
-        "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7,fr-FR;q=0.6,fr;q=0.5",
-      "Content-Type": "application/json",
-      "Content-Length": JSON.stringify(bodyData).length,
-      Token: `${INFO_TOKEN}`,
-      origin: "https://tracuunoibo.ghn.vn",
-      "User-Agent":USER_AGENT,
-      Referer: "https://tracuunoibo.ghn.vn/",
-      "Sec-Ch-Ua": `"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"`,
-      "Sec-Ch-Ua-Mobile": "?0",
-      "Sec-Ch-Ua-Platform": `"Windows"`,
-      "Sec-Fetch-Dest": "empty",
-      "Sec-Fetch-Mode": "cors",
-      "Sec-Fetch-Site": "same-site",
+  return new Promise(async (resolve) => {
+    try {
+      await launchPage();
+      const order_code = order_codes.split("\n")[0];
+      const source = "inside_system";
+      const result = await page.evaluate(
+        async ({ order_code, source }) => {
+          const bodyData = {
+            order_code,
+            source,
+          };
+
+          const headerData = {
+            "content-length": JSON.stringify(bodyData).length.toString(),
+            "content-type": "application/json",
+            token: localStorage.getItem('token'),
+            accept: "application/json",
+          };
+
+          // Thực hiện fetch từ ngữ cảnh của trình duyệt
+          const response = await fetch(
+            "https://fe-online-gateway.ghn.vn/order-tracking/public-api/internal/tracking-logs",
+            {
+              method: "POST",
+              headers: headerData,
+              body: JSON.stringify(bodyData),
+            }
+          );
+
+          if (!response.ok) {
+            throw new Error(`HTTP error! Status: ${response.status}`);
+          }
+
+          return await response.json();
+        },
+        { order_code, source } // Truyền tham số vào evaluate
+      );
+
+      resolve(result?.data ?? {});
+    } catch (error) {
+      console.error(`Lỗi trong getOrderInfo: ${error.toString()}`);
+      resolve({});
     }
-    sendOwner({content: `data headerData: ${JSON.stringify(headerData)} `});
-    fetch(
-      "https://fe-online-gateway.ghn.vn/order-tracking/public-api/internal/tracking-logs",
-      {
-        method: "POST",
-        headers: headerData,
-        body: JSON.stringify(bodyData),
-      }
-    )
-      .then((response) => {
-        if (!response.ok) {
-          throw new Error(`HTTP error! Status: ${response.status}`);
-        }
-        return response.json();
-      })
-      .then((data) => {
-        //sendOwner({content: `data RES: ${JSON.stringify(data)} `});
-        resolve(data?.data ?? {});
-      })
-      .catch((error) => {
-        sendOwner({ content: `data error: ${error.toString()} ` });
-        resolve({});
-      });
   });
 };
 
 const getWareDetail = async (code) => {
-  return new Promise((resolve) => {
-    fetch(
-      "https://fe-online-gateway.ghn.vn/order-tracking/public-api/master-data/ward-detail?ward_code=" + code,
-      {
-        method: "GET",
-        headers: {
-          Accept: "application/json",
-          "Accept-Encoding": "gzip, deflate, br, zstd",
-          "Accept-Language":
-            "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7,fr-FR;q=0.6,fr;q=0.5",
-          "Content-Type": "application/json",
-          Token: `${INFO_TOKEN}`,
-          origin: "https://tracuunoibo.ghn.vn",
-          "User-Agent":USER_AGENT,
-          Referer: "https://tracuunoibo.ghn.vn/",
-        }
-      }
-    )
-      .then((response) => {
+  return new Promise(async (resolve) => {
+    try {
+    await launchPage();
+    const result = await page.evaluate(
+      async ({ code }) => {
+        const headerData = {
+          "content-type": "application/json",
+          token: localStorage.getItem('token'),
+          accept: "application/json",
+        };
+        const response = await fetch(
+          "https://fe-online-gateway.ghn.vn/order-tracking/public-api/master-data/ward-detail?ward_code=" + code,
+          {
+            method: "GET",
+            headers: headerData
+          }
+        );
         if (!response.ok) {
           throw new Error(`HTTP error! Status: ${response.status}`);
         }
-        return response.json();
-      })
-      .then((data) => {
-        resolve(data?.data?.ward_name ?? "");
-      })
-      .catch((error) => {
-        resolve("");
-      });
+        return await response.json();
+      },
+      { code }
+    );
+    resolve(result?.data?.ward_name ?? {});
+  } catch (error) {
+    console.error(`Lỗi trong getWareDetail: ${error.toString()}`);
+    resolve({});
+  }
   });
 };
 
 const getDistricts = async () => {
-  return new Promise((resolve) => {
-    fetch(
-      "https://fe-online-gateway.ghn.vn/order-tracking/public-api/master-data/districts",
-      {
-        method: "GET",
-        headers: {
-          Accept: "application/json",
-          "Accept-Encoding": "gzip, deflate, br, zstd",
-          "Accept-Language":
-            "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7,fr-FR;q=0.6,fr;q=0.5",
-          "Content-Type": "application/json",
-          origin: "https://tracuunoibo.ghn.vn",
-          "User-Agent": USER_AGENT,
-          Referer: "https://tracuunoibo.ghn.vn/",
-        }
-      }
-    )
-      .then((response) => {
+  return new Promise(async (resolve) => {
+    try {
+    await launchPage();
+    const result = await page.evaluate(
+      async ({ }) => {
+        const response = await fetch(
+          "https://fe-online-gateway.ghn.vn/order-tracking/public-api/master-data/districts",
+          {
+            method: "GET"
+          }
+        );
         if (!response.ok) {
           throw new Error(`HTTP error! Status: ${response.status}`);
         }
-        return response.json();
-      })
-      .then((data) => {
-        resolve(data?.data ?? []);
-      })
-      .catch((error) => {
-        resolve([]);
-      });
+        return await response.json();
+      },
+      {  }
+    );
+    resolve(result?.data?? []);
+
+  } catch (error) {
+    console.error(`Lỗi trong getWareDetail: ${error.toString()}`);
+    resolve({});
+  }
+
+
+
+    // fetch(
+    //   "https://fe-online-gateway.ghn.vn/order-tracking/public-api/master-data/districts",
+    //   {
+    //     method: "GET",
+    //     headers: {
+    //       Accept: "application/json",
+    //       "Accept-Encoding": "gzip, deflate, br, zstd",
+    //       "Accept-Language":
+    //         "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7,fr-FR;q=0.6,fr;q=0.5",
+    //       "Content-Type": "application/json",
+    //       origin: "https://tracuunoibo.ghn.vn",
+    //       "User-Agent": USER_AGENT,
+    //       Referer: "https://tracuunoibo.ghn.vn/",
+    //     }
+    //   }
+    // )
+    //   .then((response) => {
+    //     if (!response.ok) {
+    //       throw new Error(`HTTP error! Status: ${response.status}`);
+    //     }
+    //     return response.json();
+    //   })
+    //   .then((data) => {
+    //     resolve(data?.data ?? []);
+    //   })
+    //   .catch((error) => {
+    //     resolve([]);
+    //   });
   });
 };
 
 //#endregion
 
 
+//#region //
+
+
+const getUserScheduler = async ({dateFrom, dateTo }) => {
+  return new Promise((resolve) => {
+    const bodyData = {
+      "hub_id": Warehouseid,
+      "from_date": dateFrom.toISOString(),
+      "to_date":  dateTo.toISOString(),
+    }
+    fetch("https://fe-nhanh-api.ghn.vn/api/sop/user-schedule/get-user-schedules-by-hub", {
+      method: "POST",
+      headers: {
+        "Accept": "application/json, text/plain, */*",
+        Authorization: `Bearer ${ACCESS_TOKEN}`,
+        "Content-Type": "application/json",
+        Referer: "https://nhanh.ghn.vn/",
+        "Sec-Ch-Ua": `"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"`,
+        "Sec-Ch-Ua-Mobile": "?0",
+        "Sec-Ch-Ua-Platform": `"Windows"`,
+        "X-Warehouseid": Warehouseid,
+      },
+      body: JSON.stringify(bodyData),
+    })
+      .then((response) => {
+        if (!response.ok) {
+          throw new Error(`HTTP error! Status: ${response.status}`);
+        }
+        return response.json();
+      })
+      .then((data) => {
+        resolve(data?.data ?? {});
+      })
+      .catch((error) => {
+        resolve({});
+      });
+  });
+};
+
+
+const handleGetDataUser = async () => {
+  if(ACCESS_TOKEN == "") return;
+  let newDate = new Date();
+  let dataUserChedule = await getUserScheduler({dateFrom: newDate, dateTo: newDate});
+  if(typeof dataUserChedule == 'object' && Object.entries(dataUserChedule).length > 0){
+    const { users } = dataUserChedule ?? {}
+    if(users != undefined){
+      dataSchedule = users?.reduce((pre, arr) =>{
+        if(arr.user_id){
+          pre[Number(arr.user_id)] = arr;
+        }
+        return pre;
+      } , {})
+    }
+  }
+}
+
+//#endregion
+
+const launchBrowser = async () => {
+  if (browser) await browser.close();
+  browser = await chromium.launchPersistentContext('./user-data', {
+    headless: false,
+    args: ['--no-sandbox'],
+  });
+  page = await browser.newPage();
+  await page.goto('https://tracuunoibo.ghn.vn');
+};
+
+const launchPage = async () =>{
+  try{
+    if (!browser || !page) {
+      console.log('Chromium không hoạt động. Khởi động lại...');
+      await launchBrowser();
+    }
+    await page.goto('https://tracuunoibo.ghn.vn/internal');
+  }catch(error){
+    console.error(`Lỗi launchPage: ${error.toString()}`);
+  }
+}
+
+const runMain = async () => {
+  try {
+    console.log('Khởi động Chromium...');
+    await launchBrowser();
+  } catch (error) {
+    sendOwner({ content: `data r: ${error.toString()} ` });
+    console.error(`Lỗi: ${error.toString()}`);
+  } finally {
+  }
+}
+
+const autoSetACCESSTOKEN = async () =>{
+  try{
+    if (!browser || !page) {
+      console.log('Chromium không hoạt động. Khởi động lại...');
+      await launchBrowser();
+    }
+    await page.goto('https://nhanh.ghn.vn');
+    const result = await page.evaluate(() => {
+        return localStorage.getItem('SESSION');
+      },
+      {  }
+    );
+    ACCESS_TOKEN = result
+  }catch(error){
+    runLoginPage();
+    console.error(`Lỗi launchPage: ${error.toString()}`);
+  }
+}
+
+
+
+let pageLogin;
+const runLoginPage = async () => {
+  try{
+
+
+    pageLogin = await browser.newPage();
+    await pageLogin.goto('https://sso-v2.ghn.vn/internal/login');
+    // Bước 1: Điền thông tin đăng nhập lần đầu
+    await pageLogin.fill('#userId', '3034650'); // Điền userId
+    await pageLogin.fill('#password', 'Hcm1234!'); // Điền password
+    await pageLogin.click('button[type=submit]'); // Click nút "Đăng nhập"
+
+    // Đợi điều hướng sau khi đăng nhập lần đầu
+    await pageLogin.waitForNavigation();
+    sendOwner({ content: "Nhập mã pin" });
+  }
+  catch(ex){  
+  }  
+}
+
+const runLoginPage_Pin = async (pin) => {
+  try{
+
+    if(!pageLogin) runLoginPage();
+    await pageLogin.fill('#pinNumber', pin);
+    await pageLogin.click('button[type=submit]');
+    await pageLogin.waitForNavigation();
+    sendOwner({ content: "Nhập OTP" });
+  }
+  catch(ex){  
+  }  
+}
+
+const runLoginPage_OTP = async (otp) => {
+  try{
+
+    if(!pageLogin) runLoginPage();
+    const otpValues = otp.split('');
+    const otpFields = await pageLogin.$$('.input-otp'); 
+    for (let i = 0; i < otpFields.length; i++) {
+      await otpFields[i].fill(otpValues[i]);
+    }
+    await pageLogin.click('button[type=submit]');
+    await pageLogin.waitForNavigation();
+    console.log('Đăng nhập hoàn tất!');
+  }
+  catch(ex){  
+  }  
+}
+
 app.listen(port, async () => {
   console.log(`Server đang chạy trên cổng ${port}`);
+  await runMain();
   let distrist = await getDistricts();
   if(distrist && distrist.length> 0){
     dataDistrist = distrist.reduce((pre,arr) => {
@@ -652,6 +815,8 @@ app.listen(port, async () => {
       return pre;
     }, {})
   }
+  await autoSetACCESSTOKEN();
+  await handleGetDataUser();
   await deleteWebhook();
   await setWebhook();
 });
