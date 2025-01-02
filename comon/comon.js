@@ -33,8 +33,8 @@ const processMessage = (message, types) => {
 
 const setWebhook = async () => {
   try {
-    //const url = await ngrok.connect(process.env.PORT || 3000);
-    const urlServer =  await ngrok.connect(process.env.PORT || 3000);// `https://vuonghoanhwedding.cloud`
+    const urlServer = await ngrok.connect(process.env.PORT || 6000);
+    //const urlServer = `https://vuonghoanhwedding.cloud`
     const result = await axios.post(
       `https://api.telegram.org/bot${botToken}/setWebhook`,
       { url: `${urlServer}/bot${botToken}` }

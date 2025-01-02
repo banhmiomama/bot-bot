@@ -408,6 +408,12 @@ const handleOrderAdd = async (chatId, messageId, content) => {
         sendMessageReply(chatId, messageId, `
           <b>${orderCode}</b>: ${status_ops_name}\n${exectorCode != "" ? `<b>Trong App: ${exectorCode} - ${dataSchedule[exectorCode]?.user_name ?? ""}</b>`: ""}
         `)
+      } else if (status_ops_name == "Đã giao hàng") {
+        let itemStatus = tracking_logs?.find((item) => { return item.action_code == "DELIVER_IN_TRIP" });
+        let exectorCode =  itemStatus?.executor?.employee_id ?? ""
+        sendMessageReply(chatId, messageId, `
+          <b>${orderCode}</b>: ${status_ops_name}\n${exectorCode != "" ? `<b>Giao hàng thành công: ${exectorCode} - ${dataSchedule[exectorCode]?.user_name ?? ""}</b>`: ""}
+        `)
       } else {
         sendMessageReply(chatId, messageId, `<b>${orderCode}</b>: ${status_ops_name}`)
       }
@@ -502,6 +508,7 @@ const getOrderInfo = async (order_codes) => {
       await launchPage();
       const order_code = order_codes.split("\n")[0];
       const source = "inside_system";
+      await page.waitForSelector('.search-input');
       const result = await page.evaluate(
         async ({ order_code, source }) => {
           const bodyData = {
@@ -778,9 +785,11 @@ const runLoginPage_Pin = async (pin) => {
     await pageLogin.fill('#pinNumber', pin);
     await pageLogin.click('button[type=submit]');
     await pageLogin.waitForNavigation();
+    console.log("pin ::" + pin)
     sendOwner({ content: "Nhập OTP" });
   }
   catch(ex){  
+    console.error(`Lỗi runLoginPage_Pin: ${ex.toString()}`);
   }  
 }
 
@@ -798,6 +807,7 @@ const runLoginPage_OTP = async (otp) => {
     console.log('Đăng nhập hoàn tất!');
   }
   catch(ex){  
+    console.error(`Lỗi runLoginPage_OTP: ${ex.toString()}`);
   }  
 }
 

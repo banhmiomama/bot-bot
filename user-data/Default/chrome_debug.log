@@ -1,0 +1,10 @@
+[0102/201358.625:INFO:CONSOLE(367)] "[Module] notify loaded successfully!", source: https://nhanh-static.ghn.vn/934f3ccf442767132ae6ddcf66e7d783ef8b879e/js/eazi.js (367)
+[0102/201358.627:INFO:CONSOLE(169)] " [MODEL ACC_V2]  - init", source: https://nhanh-static.ghn.vn/934f3ccf442767132ae6ddcf66e7d783ef8b879e/comps/model/acc_v2/acc_v2.js (169)
+[0102/201358.628:INFO:CONSOLE(367)] "[Module] notifyprocess loaded successfully!", source: https://nhanh-static.ghn.vn/934f3ccf442767132ae6ddcf66e7d783ef8b879e/js/eazi.js (367)
+[0102/201358.628:INFO:CONSOLE(9)] " [MODEL LASTMILE]  - init LASTMILE.js", source: https://nhanh-static.ghn.vn/934f3ccf442767132ae6ddcf66e7d783ef8b879e/comps/model/lastmile/lastmile.js (9)
+[0102/201358.631:INFO:CONSOLE(7)] " [MODEL HMS]  - init", source: https://nhanh-static.ghn.vn/934f3ccf442767132ae6ddcf66e7d783ef8b879e/comps/model/ops/hms/hms.js (7)
+[0102/201358.635:INFO:CONSOLE(7)] " [MODEL iamBearer]  - init iamBearer.js", source: https://nhanh-static.ghn.vn/934f3ccf442767132ae6ddcf66e7d783ef8b879e/comps/model/iamBearer/iamBearer.js (7)
+[0102/201358.635:INFO:CONSOLE(20)] "/", source: https://nhanh-static.ghn.vn/934f3ccf442767132ae6ddcf66e7d783ef8b879e/js/auth.js (20)
+[0102/201512.173:ERROR:gpu_process_host.cc(982)] GPU process exited unexpectedly: exit_code=1
+[0102/201512.173:WARNING:gpu_process_host.cc(1416)] The GPU process has crashed 1 time(s)
+[0102/201512.177:ERROR:network_service_instance_impl.cc(613)] Network service crashed, restarting service.
