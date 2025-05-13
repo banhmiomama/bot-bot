@@ -1,6 +1,11 @@
 require("dotenv").config();
 const axios = require("axios");
 const ngrok = require("ngrok");
+const https = require('https');
+
+const agent = new https.Agent({
+  family: 4, // 🔧 buộc dùng IPv4
+});
 
 const botToken = process.env.TELEGRAM_BOT_TOKEN;
 
@@ -35,9 +40,12 @@ const setWebhook = async () => {
   try {
     const urlServer = await ngrok.connect(process.env.PORT || 6000);
     //const urlServer = `https://vuonghoanhwedding.cloud`
+    console.log(`urlServer ${urlServer}`)
+    
     const result = await axios.post(
       `https://api.telegram.org/bot${botToken}/setWebhook`,
-      { url: `${urlServer}/bot${botToken}` }
+      { url: `${urlServer}/bot${botToken}` },
+      { httpsAgent: agent }
     );
     console.log("Webhook đã được thiết lập thành công!", result.data);
   } catch (error) {
@@ -47,7 +55,9 @@ const setWebhook = async () => {
 
 const deleteWebhook = async () => {
   try {
-    const result = await axios.get(`https://api.telegram.org/bot${botToken}/deleteWebhook`);
+    const result = await axios.get(`https://api.telegram.org/bot${botToken}/deleteWebhook`, {
+      httpsAgent: agent,
+    });
     console.log("deleteWebhook thành công!", result.data);
   } catch (error) {
     console.error("Lỗi khi thiết lập webhook:", error.response?.data || error.message);

@@ -1,57 +1,79 @@
 require("dotenv").config();
 const express = require("express");
 const TelegramBot = require("node-telegram-bot-api");
-const path = require("path");
 const { processMessage, setWebhook, deleteWebhook } = require("./comon/comon");
+const uploadExcelFile = require("./comon/drive");
 const axios = require('axios');
 const { chromium } = require('playwright');
+const https = require('https');
+const fs = require('fs');
+
 
 const port = process.env.PORT || 3000;
 const botToken = process.env.TELEGRAM_BOT_TOKEN;
 const IDOWNER = process.env.TELEGRAM_IDOWNER;
 const Warehouseid = "21122000";
-const bot = new TelegramBot(botToken, { polling: false });
+const bot = new TelegramBot(botToken, { polling: false ,request: {
+  agent: new https.Agent({ family: 4 }) // ⚠️ buộc IPv4
+}});
 const app = express();
 
 app.use(express.json());
 let browser; // Giữ trình duyệt Chromium
 let page; // Trang hiện tại
 let dataDistrist = {}, dataSchedule = {};
-let ACCESS_TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJvcmdDb2RlIjoiZ2huZXhwcmVzcyIsInBhcnRuZXJDb2RlIjoiIiwic2VlZCI6NTUzODE2NzYwNDYzNjE3MDY0Nywic3NvSWQiOiIzMDM0NjUwIiwidXNlcklkIjoiNjJlYjVjYTM3ODM3ODQyM2Q5NDA5NzkxIn0.XTdsEa6_fId7wP-oGqWWdgDSlezPigOLpdcneKsELNE";
-let INFO_TOKEN = "e7a2b20a-c46c-11ef-8aa3-5afc7ca5b5c0";
-
+let ACCESS_TOKEN = "";
+let pageLogin;
 let USER_AGENT = process.env.USER_AGENT || 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36';
 
 let TYPE_IN = "in";
-let TYPE_OTP = "otp";
-let TYPE_PIN = "pin";
-let TYPE_AUTH = "auth";
-let TYPE_AUTHINFO = "auth_info";
 let TYPE_INFO = "info";
 let TYPE_RUN = 'run';
 let TYPE_ADD = 'add'; 
+let TYPE_RP = 'rp'; 
 
-const TYPE = [TYPE_IN, TYPE_OTP, TYPE_PIN, TYPE_AUTH,TYPE_AUTHINFO, TYPE_INFO, TYPE_RUN, TYPE_ADD];
+const TYPE = [TYPE_IN, TYPE_INFO, TYPE_RUN, TYPE_ADD, TYPE_RP];
  
 const chatAllow = [
-  -1002254854101, -1002399045881, 6140961420, -1002498534400
+  -1002254854101, // Nhóm chỉ in
+  -1002399045881, // Nhóm chính
+  6140961420, 
+  -1002498534400, // Nhóm test 
+  -1002371190546, //// Nhóm test mới
+  //-1002448718905, //// Nhóm test mới 2
+  -4634438501,
+  -4786598413 // REPORT GHN
+
 ]
+let chatCurrentID = ""
+
+const wareData = {
+  "-1002254854101" : "21606000",
+  "-1002399045881" : "21122000",
+  "-1002498534400": "21122000",
+  "-1002371190546": "21606000",
+  "-4634438501": "21463000"
+}
+
+const getWareID = () => {
+  return wareData[chatCurrentID] ?? "";
+}
+
 // Endpoint xử lý webhook
 app.post(`/bot${botToken}`, async (req, res) => {
   const message = req?.body?.message ?? {};
-  console.log(JSON.stringify(message));
-  //if (message != undefined && message?.text != undefined && message?.chat?.id == -1002399045881) {
-  //-1002254854101 // chỉ in
-  //-1002498534400
+  console.log(message)
   if (message != undefined && message?.text != undefined) {
     try {
       const chatId = message?.chat?.id;
       const messageId = message.message_id;
+      console.log(JSON.stringify((message)));
       const { type, content } = processMessage(message, TYPE);
-      if (!chatAllow.includes(chatId) || !TYPE.includes(type) || (!TYPE_IN.includes(type) && [-1002254854101].includes(chatId))) {
+      if (!chatAllow.includes(chatId) || !TYPE.includes(type)) {
         res.status(200).send("NEXT");
         return;
       }
+      chatCurrentID = chatId;
       switch (type) {
         case TYPE_IN:
           let result = await getPrintA5(content);
@@ -63,32 +85,9 @@ app.post(`/bot${botToken}`, async (req, res) => {
             return;
           }
           break;
-        case TYPE_PIN:
-          runLoginPage_Pin(content);
-          break;
-        case TYPE_OTP:
-          runLoginPage_OTP(content)
-          break;
-        case TYPE_AUTH:
-          if (content && content.length > 100) {
-            ACCESS_TOKEN = content;
-            sendOwner({ content: "Nhập xác thực thành công" });
-            handleGetDataUser();
-            res.status(200).send("Message replied");
-            return;
-          }
-          break;
         case TYPE_RUN:
           if (content && content.length > 6) {
             handleRunTrip(chatId, messageId, content);
-          }
-          break;
-        case TYPE_AUTHINFO:
-          if (content && content.length > 20) {
-            INFO_TOKEN = content;
-            sendOwner({ content: "Nhập xác thực info thành công" });
-            res.status(200).send("Message replied");
-            return;
           }
           break;
         case TYPE_INFO:
@@ -107,6 +106,11 @@ app.post(`/bot${botToken}`, async (req, res) => {
         case TYPE_ADD:
           if (content && content.length > 0) {
             handleOrderAdd(chatId, messageId, content);
+          }
+          break;
+        case TYPE_RP:
+          if (content && content.length > 0) {
+            handleReport(chatId, messageId, content);
           }
           break;
       }
@@ -137,6 +141,25 @@ const sendMessagePrintA5 = async (chatId, messageId, currentLink) => {
           {
             text: "Link",
             url: `https://online-gateway.ghn.vn/a5/public-api/printA5?token=${currentLink}`,
+          },
+        ],
+      ],
+    },
+  });
+};
+
+
+const sendMessageLink = async (chatId, messageId, title,  currentLink) => {
+  bot.sendMessage(chatId, title, {
+    parse_mode: "HTML",
+    protect_content: true,
+    reply_to_message_id: messageId,
+    reply_markup: {
+      inline_keyboard: [
+        [
+          {
+            text: "Link",
+            url: `${currentLink}`,
           },
         ],
       ],
@@ -207,7 +230,7 @@ const getPrintA5 = async (order_codes) => {
         "Content-Type": "application/json",
         Authorization: `Bearer ${ACCESS_TOKEN}`,
         "User-Agent": USER_AGENT,
-        "X-Warehouseid": Warehouseid,
+        "X-Warehouseid": getWareID(),
         Referer: "https://nhanh.ghn.vn/",
         "Accept-Encoding": "gzip, deflate, br, zstd",
         "Accept-Language": "en-US,en;q=0.9",
@@ -215,18 +238,16 @@ const getPrintA5 = async (order_codes) => {
       body: JSON.stringify(bodyData),
     })
       .then((response) => {
-        sendOwner({ content: " res: " + JSON.stringify(response) });
         if (!response.ok) {
           throw new Error(`HTTP error! Status: ${response.status}`);
         }
         return response.json();
       })
       .then((data) => {
-        sendOwner({ content: `data r: ${JSON.stringify(data)} ` });
         resolve(data?.data?.token ?? "");
       })
       .catch((error) => {
-        sendOwner({ content: `data errr: ${error.toString()} ` });
+        sendOwner({ content: `data getPrintA5: ${error.toString()} ` });
         resolve("");
       });
   });
@@ -239,7 +260,7 @@ const getTripCode = async (driverId, status = "NEW") => {
   return new Promise((resolve) => {
     setTimeout(() => {
       const bodyData = {
-        hub_id: Warehouseid,
+        hub_id: getWareID(),
         status: status,
         is_ready: 0,
         offset: 0,
@@ -256,7 +277,7 @@ const getTripCode = async (driverId, status = "NEW") => {
             "Content-Type": "application/json",
             Authorization: `Bearer ${ACCESS_TOKEN}`,
             "User-Agent": USER_AGENT,
-            "X-Warehouseid": Warehouseid,
+            "X-Warehouseid": getWareID(),
             "Content-Length": JSON.stringify(bodyData).length,
             Referer: "https://nhanh.ghn.vn/",
             "Accept-Encoding": "gzip, deflate, br, zstd",
@@ -296,7 +317,7 @@ const setTripReady = async (trip_code) => {
         "Content-Type": "application/json",
         Authorization: `Bearer ${ACCESS_TOKEN}`,
         "User-Agent":USER_AGENT,
-        "X-Warehouseid": Warehouseid,
+        "X-Warehouseid": getWareID(),
         "Content-Length": JSON.stringify(bodyData).length,
         Referer: "https://nhanh.ghn.vn/",
         "Accept-Encoding": "gzip, deflate, br, zstd",
@@ -327,7 +348,7 @@ const setTripStart = async (trip_code) => {
         "Content-Type": "application/json",
         Authorization: `Bearer ${ACCESS_TOKEN}`,
         "User-Agent": USER_AGENT,
-        "X-Warehouseid": Warehouseid,
+        "X-Warehouseid": getWareID(),
         "Content-Length": JSON.stringify(bodyData).length,
         Referer: "https://nhanh.ghn.vn/",
         "Accept-Encoding": "gzip, deflate, br, zstd",
@@ -372,7 +393,7 @@ const handleOrderAdd = async (chatId, messageId, content) => {
     if(orderCode == undefined || orderCode == "") return;
     let { order_info, tracking_logs} = await getOrderInfo(orderCode);
     let { deliver_warehouse_id, status_ops_name,  } = order_info ?? {};
-    if (deliver_warehouse_id == Warehouseid) {
+    if (deliver_warehouse_id == getWareID()) {
       if (status_ops_name == "Lưu kho giao" || status_ops_name == "Đang luân chuyển giao") {
         let tripCodeDefault = await getTripCode(empCode);
         await sleep(1000);
@@ -406,13 +427,13 @@ const handleOrderAdd = async (chatId, messageId, content) => {
         let itemStatus = tracking_logs?.find((item) => { return item.action_code == "START_DELIVERY_TRIP" });
         let exectorCode =  itemStatus?.executor?.employee_id ?? ""
         sendMessageReply(chatId, messageId, `
-          <b>${orderCode}</b>: ${status_ops_name}\n${exectorCode != "" ? `<b>Trong App: ${exectorCode} - ${dataSchedule[exectorCode]?.user_name ?? ""}</b>`: ""}
+          <b>${orderCode}</b>: ${status_ops_name}\n${exectorCode != "" ? `<b>Trong App: ${exectorCode} - ${dataSchedule[getWareID()][exectorCode]?.user_name ?? ""}</b>`: ""}
         `)
       } else if (status_ops_name == "Đã giao hàng") {
         let itemStatus = tracking_logs?.find((item) => { return item.action_code == "DELIVER_IN_TRIP" });
         let exectorCode =  itemStatus?.executor?.employee_id ?? ""
         sendMessageReply(chatId, messageId, `
-          <b>${orderCode}</b>: ${status_ops_name}\n${exectorCode != "" ? `<b>Giao hàng thành công: ${exectorCode} - ${dataSchedule[exectorCode]?.user_name ?? ""}</b>`: ""}
+          <b>${orderCode}</b>: ${status_ops_name}\n${exectorCode != "" ? `<b>Giao hàng thành công: ${exectorCode} - ${dataSchedule[getWareID()][exectorCode]?.user_name ?? ""}</b>`: ""}
         `)
       } else {
         sendMessageReply(chatId, messageId, `<b>${orderCode}</b>: ${status_ops_name}`)
@@ -438,7 +459,7 @@ const addOrderItem = async ({ tripCode,orderCodes }) => {
         "Content-Type": "application/json",
         Authorization: `Bearer ${ACCESS_TOKEN}`,
         "User-Agent":USER_AGENT,
-        "X-Warehouseid": Warehouseid,
+        "X-Warehouseid": getWareID(),
         "Content-Length": JSON.stringify(bodyData).length,
         Referer: "https://nhanh.ghn.vn/",
         "Accept-Encoding": "gzip, deflate, br, zstd",
@@ -465,7 +486,7 @@ const setUnPack = async (orderCode) => {
   return new Promise((resolve) => {
     const bodyData = {
       orderCode: orderCode,
-      locationId: Warehouseid,
+      locationId: getWareID(),
       locationType: "GHN_HUB",
       source: "INSIDE_WEB_APP/ktc-van-tai/unpack/quick",
     };
@@ -475,7 +496,7 @@ const setUnPack = async (orderCode) => {
         "Content-Type": "application/json",
         Authorization: `Bearer ${ACCESS_TOKEN}`,
         "User-Agent":USER_AGENT,
-        "X-Warehouseid": Warehouseid,
+        "X-Warehouseid": getWareID(),
         "Content-Length": JSON.stringify(bodyData).length,
         Referer: "https://nhanh.ghn.vn/",
         "Accept-Encoding": "gzip, deflate, br, zstd",
@@ -608,50 +629,18 @@ const getDistricts = async () => {
     console.error(`Lỗi trong getWareDetail: ${error.toString()}`);
     resolve({});
   }
-
-
-
-    // fetch(
-    //   "https://fe-online-gateway.ghn.vn/order-tracking/public-api/master-data/districts",
-    //   {
-    //     method: "GET",
-    //     headers: {
-    //       Accept: "application/json",
-    //       "Accept-Encoding": "gzip, deflate, br, zstd",
-    //       "Accept-Language":
-    //         "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7,fr-FR;q=0.6,fr;q=0.5",
-    //       "Content-Type": "application/json",
-    //       origin: "https://tracuunoibo.ghn.vn",
-    //       "User-Agent": USER_AGENT,
-    //       Referer: "https://tracuunoibo.ghn.vn/",
-    //     }
-    //   }
-    // )
-    //   .then((response) => {
-    //     if (!response.ok) {
-    //       throw new Error(`HTTP error! Status: ${response.status}`);
-    //     }
-    //     return response.json();
-    //   })
-    //   .then((data) => {
-    //     resolve(data?.data ?? []);
-    //   })
-    //   .catch((error) => {
-    //     resolve([]);
-    //   });
   });
 };
 
 //#endregion
 
+//#region // GET USER
 
-//#region //
 
-
-const getUserScheduler = async ({dateFrom, dateTo }) => {
+const getUserScheduler = async ({dateFrom, dateTo ,wareid }) => {
   return new Promise((resolve) => {
     const bodyData = {
-      "hub_id": Warehouseid,
+      "hub_id": wareid,
       "from_date": dateFrom.toISOString(),
       "to_date":  dateTo.toISOString(),
     }
@@ -665,7 +654,7 @@ const getUserScheduler = async ({dateFrom, dateTo }) => {
         "Sec-Ch-Ua": `"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"`,
         "Sec-Ch-Ua-Mobile": "?0",
         "Sec-Ch-Ua-Platform": `"Windows"`,
-        "X-Warehouseid": Warehouseid,
+        "X-Warehouseid": getWareID(),
       },
       body: JSON.stringify(bodyData),
     })
@@ -684,25 +673,41 @@ const getUserScheduler = async ({dateFrom, dateTo }) => {
   });
 };
 
-
 const handleGetDataUser = async () => {
-  if(ACCESS_TOKEN == "") return;
+  if (!ACCESS_TOKEN) return;
+
   let newDate = new Date();
-  let dataUserChedule = await getUserScheduler({dateFrom: newDate, dateTo: newDate});
-  if(typeof dataUserChedule == 'object' && Object.entries(dataUserChedule).length > 0){
-    const { users } = dataUserChedule ?? {}
-    if(users != undefined){
-      dataSchedule = users?.reduce((pre, arr) =>{
-        if(arr.user_id){
-          pre[Number(arr.user_id)] = arr;
+  let wareIds = ["21122000", "21606000", "21463000"];
+  dataSchedule = {};
+
+  for (let wareid of wareIds) {
+    try {
+      let result = await getUserScheduler({ dateFrom: newDate, dateTo: newDate, wareid });
+
+      if (result && typeof result === "object" && Object.keys(result).length > 0) {
+        const { users } = result ?? {};
+        if (users) {
+          dataSchedule[wareid] = users.reduce((acc, user) => {
+            if (user.user_id) acc[Number(user.user_id)] = user;
+            return acc;
+          }, {});
         }
-        return pre;
-      } , {})
+      }
+
+      console.log(`Fetched data for wareid: ${wareid}`);
+      
+    } catch (error) {
+      console.error(`Error fetching data for wareid ${wareid}:`, error);
     }
+
+    await sleep(1000); 
   }
-}
+};
+
 
 //#endregion
+
+//#region // Handle INIT
 
 const launchBrowser = async () => {
   if (browser) await browser.close();
@@ -743,13 +748,14 @@ const autoSetACCESSTOKEN = async () =>{
       console.log('Chromium không hoạt động. Khởi động lại...');
       await launchBrowser();
     }
-    await page.goto('https://nhanh.ghn.vn');
+    await page.goto('https://nhanh.ghn.vn/lastmile/trip-list');
     const result = await page.evaluate(() => {
         return localStorage.getItem('SESSION');
       },
       {  }
     );
-    ACCESS_TOKEN = result
+    ACCESS_TOKEN = result;
+    return result
   }catch(error){
     runLoginPage();
     console.error(`Lỗi launchPage: ${error.toString()}`);
@@ -757,8 +763,6 @@ const autoSetACCESSTOKEN = async () =>{
 }
 
 
-
-let pageLogin;
 const runLoginPage = async () => {
   try{
 
@@ -766,8 +770,8 @@ const runLoginPage = async () => {
     pageLogin = await browser.newPage();
     await pageLogin.goto('https://sso-v2.ghn.vn/internal/login');
     // Bước 1: Điền thông tin đăng nhập lần đầu
-    await pageLogin.fill('#userId', '3034650'); // Điền userId
-    await pageLogin.fill('#password', 'Hcm1234!'); // Điền password
+    await pageLogin.fill('#userId', '3050253'); // Điền userId
+    await pageLogin.fill('#password', 'Dhl@1711'); // Điền password
     await pageLogin.click('button[type=submit]'); // Click nút "Đăng nhập"
 
     // Đợi điều hướng sau khi đăng nhập lần đầu
@@ -778,41 +782,311 @@ const runLoginPage = async () => {
   }  
 }
 
-const runLoginPage_Pin = async (pin) => {
-  try{
+//#endregion
 
-    if(!pageLogin) runLoginPage();
-    await pageLogin.fill('#pinNumber', pin);
-    await pageLogin.click('button[type=submit]');
-    await pageLogin.waitForNavigation();
-    console.log("pin ::" + pin)
-    sendOwner({ content: "Nhập OTP" });
-  }
-  catch(ex){  
-    console.error(`Lỗi runLoginPage_Pin: ${ex.toString()}`);
-  }  
-}
+//#region // HANDLE REPORT
 
-const runLoginPage_OTP = async (otp) => {
-  try{
+const handleReport = async (chatId, messageId, content) => {
+  var dataResult = [
+    [
+      "STT",
+      "Tên Nhân Viên",
+      "Đơn Gán",
+      "Giao TC",
+      "Giao TB",
+      "Đơn Lấy",
+      "Đơn Trả",
+      "Tỉ lệ giao TC",
+    ],
+  ];
+  let fileName = '' 
+  try {
+    let [date, wareid] = content.split("\n");
+    if (date == undefined || date == "" || wareid == undefined || wareid == "")
+      return;
+    let dateFrom = new Date(date);
+    let dateTo = new Date(date);
+    dateTo.setDate(dateTo.getDate() + 1);
+    fileName = `Báo cáo ${ConvertDatetimeToDMY(dateFrom)}`;
+    const tripList = await getSearchTrip({ dateFrom, dateTo, wareid });
+    if (tripList == undefined || tripList.length < 0) return;
+    let total = { DELIVER: 0, DELIVER_SUCC: 0, PICK: 0, RETURN: 0 };
 
-    if(!pageLogin) runLoginPage();
-    const otpValues = otp.split('');
-    const otpFields = await pageLogin.$$('.input-otp'); 
-    for (let i = 0; i < otpFields.length; i++) {
-      await otpFields[i].fill(otpValues[i]);
+    for (let i = 0; i < tripList.length; i++) {
+      let { driverName, tripCode, status } = tripList[i];
+      if (status !== "FINISHED") continue;
+
+      let tripItems = await getTripItems({ tripCode, wareid });
+
+      let totalAll = tripItems.reduce(
+        (pre, arr) => {
+          if (arr) {
+            switch (arr.type) {
+              case "DELIVER":
+                pre.DELIVER++;
+                if (arr.isSucceeded) pre.DELIVER_SUCC++;
+                break;
+              case "PICK":
+                pre.PICK++;
+                break;
+              case "RETURN":
+                if (arr.isSucceeded) pre.RETURN++;
+                break;
+            }
+          }
+          return pre;
+        },
+        { DELIVER: 0, DELIVER_SUCC: 0, PICK: 0, RETURN: 0 }
+      );
+
+      // Cộng dồn tổng
+      total.DELIVER += totalAll.DELIVER;
+      total.DELIVER_SUCC += totalAll.DELIVER_SUCC;
+      total.PICK += totalAll.PICK;
+      total.RETURN += totalAll.RETURN;
+
+      let tripItem = [
+        i,
+        driverName,
+        totalAll.DELIVER,
+        totalAll.DELIVER_SUCC,
+        totalAll.DELIVER - totalAll.DELIVER_SUCC,
+        totalAll.PICK,
+        totalAll.RETURN,
+        totalAll.DELIVER
+          ? (totalAll.DELIVER_SUCC / totalAll.DELIVER).toFixed(2)
+          : 0,
+      ];
+      dataResult.push(tripItem);
+      sleep(600);
     }
-    await pageLogin.click('button[type=submit]');
-    await pageLogin.waitForNavigation();
-    console.log('Đăng nhập hoàn tất!');
+
+    // Tính tổng các cột & trung bình cộng cho cột "Tỉ lệ giao TC"
+    let avgRate = total.DELIVER
+      ? (total.DELIVER_SUCC / total.DELIVER).toFixed(2)
+      : "0";
+
+    dataResult.push([
+      "",
+      "Tổng",
+      total.DELIVER,
+      total.DELIVER_SUCC,
+      total.DELIVER - total.DELIVER_SUCC,
+      total.PICK,
+      total.RETURN,
+      avgRate,
+    ]);
+
+    
+    const result = await uploadExcelFile(
+      ConvertDatetimeToDMY(dateFrom),
+      dataResult,
+      `${wareid}-${ConvertDatetimeToDMY(dateFrom)}`
+    );
+    sendMessageLink(
+      chatId,
+      messageId,
+      fileName,
+      `https://docs.google.com/spreadsheets/d/${process.env.SPREADSHEET_ID || "1tS-qXSVvVLUGlftF0uiB65y8JTl8iu0UpbWXiaSqB40"}/edit?gid=${result}#gid=${result}`
+    );
+  } catch (er) {
+    if (er.status == 400) {
+      sendMessageReply(
+        chatId,
+        messageId,
+        er.message
+      );
+    }
+  } finally{
+    createImage(fileName, dataResult, chatId, messageId);
   }
-  catch(ex){  
-    console.error(`Lỗi runLoginPage_OTP: ${ex.toString()}`);
-  }  
-}
+};
+
+const ConvertDatetimeToDMY = (date) => {
+  let day = date.getDate();
+  let month = date.getMonth() + 1; // Tháng bắt đầu từ 0
+  const year = date.getFullYear();
+
+  // Đảm bảo ngày và tháng có hai chữ số
+  day = day.toString().padStart(2, "0");
+  month = month.toString().padStart(2, "0");
+
+  return `${day}/${month}/${year}`;
+};
+
+const getSearchTrip = async ({ dateFrom, dateTo ,wareid }) => {
+  return new Promise((resolve) => {
+    const bodyData = {
+      "fromDate": dateFrom,
+      "toDate": dateTo,
+      "page": 1,
+      "limit": 20,
+      "offset": 0,
+      "hubId": wareid,
+      "reverse": true
+  }
+    fetch("https://fe-nhanh-api.ghn.vn/api/lastmile/trip/search-trip", {
+      method: "POST",
+      headers: {
+        "Accept": "application/json, text/plain, */*",
+        Authorization: `Bearer ${ACCESS_TOKEN}`,
+        "Content-Type": "application/json",
+        Referer: "https://nhanh.ghn.vn/",
+        "Sec-Ch-Ua": `"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"`,
+        "Sec-Ch-Ua-Mobile": "?0",
+        "Sec-Ch-Ua-Platform": `"Windows"`,
+        "X-Warehouseid": wareid,
+      },
+      body: JSON.stringify(bodyData),
+    })
+      .then((response) => {
+        if (!response.ok) {
+          throw new Error(`HTTP error! Status: ${response.status}`);
+        }
+        return response.json();
+      })
+      .then((data) => {
+        resolve(data?.data ?? []);
+      })
+      .catch((error) => {
+        resolve({});
+      });
+  });
+};
+
+const getTripItems = async ({ tripCode, wareid }) => {
+  return new Promise((resolve) => {
+    const bodyData = {
+        "typeList": [
+            "PICK",
+            "DELIVER",
+            "RETURN"
+        ],
+        "offset": 0,
+        "limit": 1000,
+        "TripCode": tripCode
+    }
+    fetch("https://fe-nhanh-api.ghn.vn/api/lastmile/trip/get-trip-items", {
+      method: "POST",
+      headers: {
+        "Accept": "application/json, text/plain, */*",
+        Authorization: `Bearer ${ACCESS_TOKEN}`,
+        "Content-Type": "application/json",
+        Referer: "https://nhanh.ghn.vn/",
+        "Sec-Ch-Ua": `"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"`,
+        "Sec-Ch-Ua-Mobile": "?0",
+        "Sec-Ch-Ua-Platform": `"Windows"`,
+        "X-Warehouseid": wareid,
+      },
+      body: JSON.stringify(bodyData),
+    })
+      .then((response) => {
+        if (!response.ok) {
+          throw new Error(`HTTP error! Status: ${response.status}`);
+        }
+        return response.json();
+      })
+      .then((data) => {
+        resolve(data?.data ?? []);
+      })
+      .catch((error) => {
+        resolve({});
+      });
+  });
+};
+
+
+const createImage = async (fileName, data, chatId, messageId) => {
+  const html = `
+    <html>
+    <head>
+      <style>
+        body { font-family: Arial; }
+        table {
+          border-collapse: collapse;
+          width: 100%;
+          font-size: 14px;
+        }
+        th, td {
+          border: 1px solid #999;
+          padding: 8px;
+          text-align: center;
+        }
+        th {
+          background-color: #4CAF50;
+          color: white;
+        }
+        tr:nth-child(even) { background-color: #f2f2f2; }
+        tr:last-child { background-color:  #f6653c ; color:white }
+
+
+        caption {
+          caption-side: top;
+          font-weight: bold;
+          font-size: 20px;
+          padding: 10px;
+          text-transform: uppercase;
+        }
+        .danger{
+          background-color: bf3636;
+          color:white;
+        }
+      </style>
+    </head>
+    <body>
+      <table>
+             <caption>${fileName}</caption>
+
+        <thead>
+          <tr>${data[0].map((col) => `<th>${col}</th>`).join("")}</tr>
+        </thead>
+        <tbody>
+        ${data
+          .slice(1)
+          .map((row) => {
+            return `<tr>${row
+              .map((cell, i) => {
+                // Nếu là cột cuối cùng
+                if (i === row.length - 1) {
+                  const percent = Math.round(cell * 100); // 0.6 -> 60
+                  const color = percent < 80 ? "danger" : "";
+                  return `<td class="${color}">${percent}%</td>`;
+                }
+                return `<td>${cell}</td>`;
+              })
+              .join("")}</tr>`;
+          })
+          .join("")}
+        </tbody>
+      </table>
+    </body>
+    </html>
+  `;
+
+  if (browser) {
+    const pageImage = await browser.newPage();
+    await pageImage.setContent(html, { waitUntil: "networkidle0" });
+
+    const element = await pageImage.$("table");
+    await element.screenshot({ path: "table.png" });
+    //await pageImage.close();
+
+    const base64Str = fs.readFileSync("table.png").toString("base64");
+    const imageBuffer = Buffer.from(base64Str, "base64");
+    bot
+      .sendPhoto(chatId, imageBuffer, {
+        caption: fileName,
+        reply_to_message_id: messageId,
+      })
+      .then(() => {
+        console.log("✅ Đã gửi ảnh dạng reply");
+      });
+  }
+};
+
+//#endregion
 
 app.listen(port, async () => {
-  console.log(`Server đang chạy trên cổng ${port}`);
   await runMain();
   let distrist = await getDistricts();
   if(distrist && distrist.length> 0){
@@ -829,4 +1103,10 @@ app.listen(port, async () => {
   await handleGetDataUser();
   await deleteWebhook();
   await setWebhook();
+
+  
+
+//   handleReport(-1002498534400,2074,`2025/04/07
+// 21122000` )
+
 });
