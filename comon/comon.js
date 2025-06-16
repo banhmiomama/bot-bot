@@ -1,13 +1,10 @@
 require("dotenv").config();
 const axios = require("axios");
+const https = require("https");
 const ngrok = require("ngrok");
-const https = require('https');
-
-const agent = new https.Agent({
-  family: 4, // 🔧 buộc dùng IPv4
-});
 
 const botToken = process.env.TELEGRAM_BOT_TOKEN;
+const httpsAgent = new https.Agent({ family: 4 });
 
 if (!botToken) {
   console.error("Lỗi: TELEGRAM_BOT_TOKEN không được cung cấp!");
@@ -27,7 +24,7 @@ const processMessage = (message, types) => {
       }
     }
     result.content = lines
-      .filter((line) => !line.startsWith(result.type))
+      .filter((line) => !line.toLowerCase().startsWith(result.type))
       .join("\n");
     return result;
   } catch (error) {
@@ -38,14 +35,12 @@ const processMessage = (message, types) => {
 
 const setWebhook = async () => {
   try {
-    const urlServer = await ngrok.connect(process.env.PORT || 6000);
-    //const urlServer = `https://vuonghoanhwedding.cloud`
-    console.log(`urlServer ${urlServer}`)
-    
+    const urlServer = process.env.URL || await ngrok.connect(process.env.PORT || 6000);
     const result = await axios.post(
       `https://api.telegram.org/bot${botToken}/setWebhook`,
       { url: `${urlServer}/bot${botToken}` },
-      { httpsAgent: agent }
+
+       { httpsAgent } 
     );
     console.log("Webhook đã được thiết lập thành công!", result.data);
   } catch (error) {
@@ -55,9 +50,7 @@ const setWebhook = async () => {
 
 const deleteWebhook = async () => {
   try {
-    const result = await axios.get(`https://api.telegram.org/bot${botToken}/deleteWebhook`, {
-      httpsAgent: agent,
-    });
+    const result = await axios.get(`https://api.telegram.org/bot${botToken}/deleteWebhook`, { httpsAgent } );
     console.log("deleteWebhook thành công!", result.data);
   } catch (error) {
     console.error("Lỗi khi thiết lập webhook:", error.response?.data || error.message);

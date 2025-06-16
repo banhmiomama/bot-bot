@@ -14,7 +14,7 @@ const botToken = process.env.TELEGRAM_BOT_TOKEN;
 const IDOWNER = process.env.TELEGRAM_IDOWNER;
 const Warehouseid = "21122000";
 const bot = new TelegramBot(botToken, { polling: false ,request: {
-  agent: new https.Agent({ family: 4 }) // ⚠️ buộc IPv4
+  agent: new https.Agent({ family: 4 })
 }});
 const app = express();
 
@@ -29,10 +29,12 @@ let USER_AGENT = process.env.USER_AGENT || 'Mozilla/5.0 (X11; Linux x86_64) Appl
 let TYPE_IN = "in";
 let TYPE_INFO = "info";
 let TYPE_RUN = 'run';
-let TYPE_ADD = 'add'; 
+let TYPE_ADD = 'add';
+let TYPE_ADDALL = 'addall'; 
+let TYPE_RETURN = 'return'; 
 let TYPE_RP = 'rp'; 
 
-const TYPE = [TYPE_IN, TYPE_INFO, TYPE_RUN, TYPE_ADD, TYPE_RP];
+const TYPE = [TYPE_IN, TYPE_INFO, TYPE_RUN, TYPE_ADD, TYPE_RP, TYPE_ADDALL, TYPE_RETURN];
  
 const chatAllow = [
   -1002254854101, // Nhóm chỉ in
@@ -42,6 +44,7 @@ const chatAllow = [
   -1002371190546, //// Nhóm test mới
   //-1002448718905, //// Nhóm test mới 2
   -4634438501,
+  -4645475612,
   -4786598413 // REPORT GHN
 
 ]
@@ -52,7 +55,8 @@ const wareData = {
   "-1002399045881" : "21122000",
   "-1002498534400": "21122000",
   "-1002371190546": "21606000",
-  "-4634438501": "21463000"
+  "-4634438501": "21463000",
+  "-4645475612": "21712000" // Kho tân bình mới
 }
 
 const getWareID = () => {
@@ -104,8 +108,10 @@ app.post(`/bot${botToken}`, async (req, res) => {
           }
           break;
         case TYPE_ADD:
+        case TYPE_ADDALL:
+        case TYPE_RETURN:
           if (content && content.length > 0) {
-            handleOrderAdd(chatId, messageId, content);
+            handleOrderAdd(type, chatId, messageId, content);
           }
           break;
         case TYPE_RP:
@@ -387,78 +393,108 @@ const handleRunTrip = async (chatId, messageId, driverId) => {
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
-const handleOrderAdd = async (chatId, messageId, content) => {
+
+const handleOrderAdd = async (type, chatId, messageId, content) => {
   return new Promise(async (resolve) => {
-    let [ orderCode, empCode ] = content.split("\n");
-    if(orderCode == undefined || orderCode == "") return;
-    let { order_info, tracking_logs} = await getOrderInfo(orderCode);
-    let { deliver_warehouse_id, status_ops_name,  } = order_info ?? {};
-    if (deliver_warehouse_id == getWareID()) {
-      if (status_ops_name == "Lưu kho giao" || status_ops_name == "Đang luân chuyển giao") {
-        let tripCodeDefault = await getTripCode(empCode);
-        await sleep(1000);
-        let tripCodeOnTrip = await getTripCode(empCode, "ON_TRIP");
-        let {tripCode } = {
-            ...tripCodeDefault,
-            ...tripCodeOnTrip,
-        };
-        if (tripCode == undefined || tripCode == "") {
-          sendMessageReply(chatId ,messageId ,`<b>${empCode}</b>: Không có trong DS chuyến đi hoặc đã chạy`);
-          return;
+    const lines = content.split("\n").map(line => line.trim()).filter(Boolean);
+    if (lines.length < 2) {
+      sendMessageReply(chatId, messageId, `<b>Dữ liệu không hợp lệ. Cần ít nhất 1 đơn hàng và 1 mã nhân viên.</b>`);
+      return;
+    }
+
+    const empCode = lines[lines.length - 1];
+    const orderCodes = lines.slice(0, -1);
+    let tripCodeDefault = await getTripCode(empCode);
+    await sleep(1000);
+    let tripCodeOnTrip = await getTripCode(empCode, "ON_TRIP");
+
+    let tripCode = tripCodeOnTrip?.tripCode || tripCodeDefault?.tripCode;
+    if (!tripCode) {
+      sendMessageReply(chatId, messageId, `<b>${empCode}</b>: Không có trong DS chuyến đi hoặc đã chạy`);
+      return;
+    }
+
+    for (let orderCode of orderCodes) {
+      if (!orderCode) continue;
+
+      let { order_info, tracking_logs } = await getOrderInfo(orderCode);
+      let { deliver_warehouse_id, status_ops_name, return_warehouse_id } = order_info ?? {};
+
+      if (!order_info) {
+        sendMessageReply(chatId, messageId, `<b>${orderCode}</b>: Không tìm thấy thông tin đơn hàng`);
+        continue;
+      }
+
+      if ((deliver_warehouse_id != getWareID() && type == TYPE_ADD) || (type == TYPE_RETURN && return_warehouse_id != getWareID())) {
+        sendMessageReply(chatId, messageId, `<b>${orderCode}</b>: Không thuộc kho bạn, nhắn lên nhóm giao hàng`);
+        continue;
+      }
+
+      if ((type == TYPE_ADD && (status_ops_name === "Lưu kho giao" || status_ops_name === "Đang luân chuyển giao")) 
+        || type == TYPE_ADDALL
+        || (type == TYPE_RETURN && (status_ops_name === "Lưu kho trả" || status_ops_name === "Đang luân chuyển trả"))
+      ) {
+        if (type != TYPE_ADDALL) {
+          await setUnPack(orderCode);
+          sendMessageReply(chatId, messageId, `<b>${orderCode}</b>: Rã hàng`);
+          await sleep(4000);
         }
-        await setUnPack(orderCode)
-        sendMessageReply(chatId,messageId,`<b>${orderCode}</b>: Rã hàng`);
-        await sleep(4000);
+        
         let result = await addOrderItem({
           tripCode: tripCode,
           orderCodes: orderCode,
+          type: type == TYPE_RETURN ? "RETURN" : "DELIVER"
         });
-        if(result == false){
-          sendMessageReply(chatId,messageId,`<b>${orderCode}</b>: Chuyển thất bại`);
-          return;
+
+        if (result == false) {
+          sendMessageReply(chatId, messageId, `<b>${orderCode}</b>: Chuyển thất bại`);
+        } else if (result?.status == "OK") {
+          if(type != TYPE_ADDALL)
+            sendMessageReply(chatId, messageId, `<b>${orderCode}</b>: Thêm đơn hàng thành công cho ${empCode}`);
+        } else {
+          sendMessageReply(chatId, messageId, `<b>${orderCode}</b>: ${result?.message?.split(",")[0] ?? "Thất bại"}, nhắn lên nhóm giao hàng`);
         }
-        if(result?.status == "OK"){
-          sendMessageReply(chatId,messageId,`<b>${orderCode}</b>: Thêm đơn hàng thành công cho ${empCode}`);
-          return;
-        }
-        sendMessageReply(chatId,messageId,`<b>${result?.message?.split(",")[0] ?? "Thất bại"}, nhắn lên nhóm giao hàng</b>`);
-        return;
-      } else if (status_ops_name == "Đang giao hàng") {
-        let itemStatus = tracking_logs?.find((item) => { return item.action_code == "START_DELIVERY_TRIP" });
-        let exectorCode =  itemStatus?.executor?.employee_id ?? ""
-        sendMessageReply(chatId, messageId, `
-          <b>${orderCode}</b>: ${status_ops_name}\n${exectorCode != "" ? `<b>Trong App: ${exectorCode} - ${dataSchedule[getWareID()][exectorCode]?.user_name ?? ""}</b>`: ""}
-        `)
-      } else if (status_ops_name == "Đã giao hàng") {
-        let itemStatus = tracking_logs?.find((item) => { return item.action_code == "DELIVER_IN_TRIP" });
-        let exectorCode =  itemStatus?.executor?.employee_id ?? ""
-        sendMessageReply(chatId, messageId, `
-          <b>${orderCode}</b>: ${status_ops_name}\n${exectorCode != "" ? `<b>Giao hàng thành công: ${exectorCode} - ${dataSchedule[getWareID()][exectorCode]?.user_name ?? ""}</b>`: ""}
-        `)
+      } else if (status_ops_name === "Đang giao hàng") {
+        let itemStatus = tracking_logs?.find(item => item.action_code === "START_DELIVERY_TRIP");
+        let executorCode = itemStatus?.executor?.employee_id ?? "";
+        let userName = dataSchedule[getWareID()]?.[executorCode]?.user_name ?? "";
+        sendMessageReply(chatId, messageId, `<b>${orderCode}</b>: ${status_ops_name}\n${executorCode ? `<b>Trong App: ${executorCode} - ${userName}</b>` : ""}`);
+      } else if (status_ops_name === "Đã giao hàng") {
+        let itemStatus = tracking_logs?.find(item => item.action_code === "DELIVER_IN_TRIP");
+        let executorCode = itemStatus?.executor?.employee_id ?? "";
+        let userName = dataSchedule[getWareID()]?.[executorCode]?.user_name ?? "";
+        sendMessageReply(chatId, messageId, `<b>${orderCode}</b>: ${status_ops_name}\n${executorCode ? `<b>Giao hàng thành công: ${executorCode} - ${userName}</b>` : ""}`);
+      } else if (status_ops_name === "Đã trả hàng") {
+        let itemStatus = tracking_logs?.find(item => item.action_code === "RETURN_IN_TRIP");
+        let executorCode = itemStatus?.executor?.employee_id ?? "";
+        let userName = dataSchedule[getWareID()]?.[executorCode]?.user_name ?? "";
+        sendMessageReply(chatId, messageId, `<b>${orderCode}</b>: ${status_ops_name}\n${executorCode ? `<b>Trả hàng thành công: ${executorCode} - ${userName}</b>` : ""}`);
       } else {
-        sendMessageReply(chatId, messageId, `<b>${orderCode}</b>: ${status_ops_name}`)
+        sendMessageReply(chatId, messageId, `<b>${orderCode}</b>: ${status_ops_name}`);
       }
+
+      await sleep(1700); 
     }
-    else if(deliver_warehouse_id != undefined){
-      sendMessageReply(chatId,messageId,`<b>Nhắn lên nhóm giao hàng</b>`);
-    }
+
+    resolve();
   });
 };
 
-const addOrderItem = async ({ tripCode,orderCodes }) => {
+
+const addOrderItem = async ({ tripCode, orderCodes, type }) => {
   return new Promise((resolve) => {
-      const bodyData = {
-        "tripCode": tripCode,
-        "type": "DELIVER",
-        "orderCodes": orderCodes.split("\n"),
-        "confirmWarning": false
+    const bodyData = {
+      "tripCode": tripCode,
+      "type": type,
+      "orderCodes": orderCodes.split("\n"),
+      "confirmWarning": false
     }
     fetch("https://fe-nhanh-api.ghn.vn/api/lastmile/v2/trip/add-item-v1", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${ACCESS_TOKEN}`,
-        "User-Agent":USER_AGENT,
+        "User-Agent": USER_AGENT,
         "X-Warehouseid": getWareID(),
         "Content-Length": JSON.stringify(bodyData).length,
         Referer: "https://nhanh.ghn.vn/",
@@ -846,7 +882,7 @@ const handleReport = async (chatId, messageId, content) => {
       total.RETURN += totalAll.RETURN;
 
       let tripItem = [
-        i,
+        i + 1,
         driverName,
         totalAll.DELIVER,
         totalAll.DELIVER_SUCC,
@@ -1069,7 +1105,7 @@ const createImage = async (fileName, data, chatId, messageId) => {
 
     const element = await pageImage.$("table");
     await element.screenshot({ path: "table.png" });
-    //await pageImage.close();
+    
 
     const base64Str = fs.readFileSync("table.png").toString("base64");
     const imageBuffer = Buffer.from(base64Str, "base64");
@@ -1081,6 +1117,7 @@ const createImage = async (fileName, data, chatId, messageId) => {
       .then(() => {
         console.log("✅ Đã gửi ảnh dạng reply");
       });
+    await pageImage.close();
   }
 };
 
@@ -1103,10 +1140,4 @@ app.listen(port, async () => {
   await handleGetDataUser();
   await deleteWebhook();
   await setWebhook();
-
-  
-
-//   handleReport(-1002498534400,2074,`2025/04/07
-// 21122000` )
-
 });
